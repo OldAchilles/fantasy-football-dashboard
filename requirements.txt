@@ -4,11 +4,4 @@ plotly
 espn-api
 gspread
 google-auth
-```
 
-### `.gitignore`
-```
-credentials.json
-*.pyc
-__pycache__/
-.env
