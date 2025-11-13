@@ -1,7 +1,6 @@
 streamlit
 pandas
 plotly
+numpy
 espn-api
-gspread
-google-auth
 
