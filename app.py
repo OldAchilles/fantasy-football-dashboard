@@ -52,18 +52,15 @@ def normalize_name(first_name):
     # Return title case version as default
     return title_name
 
-def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
+def get_head_to_head_data(league_id, years, espn_s2, swid):
     """Build head-to-head record matrix across all years"""
 
     matchup_records = {}
     owner_first_name_map = {}
-    debug_matchups = []
 
     for year in years:
         try:
             league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
-
-            print(f"\n=== Processing {year} ===")
 
             # Build firstName mapping for this year
             for team in league.teams:
@@ -95,16 +92,7 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                 owner_first_name_map[owner_id] = first_name
 
             # For 2019+, use box_scores
-            # For 2019+, right after building the firstName mapping
             if year >= 2019:
-                print(f"Using box_scores for {year}")
-
-                # Debug: Show name mappings for debug owners
-                if debug_owners:
-                    print(f"  Name mappings for {year}:")
-                    for owner_id, first_name in owner_first_name_map.items():
-                        if first_name in debug_owners or any(debug_name.lower() in str(owner_id).lower() for debug_name in debug_owners):
-                            print(f"    '{owner_id}' -> '{first_name}'")
 
                 week = 1
                 max_week = 20
@@ -114,7 +102,11 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                         box_scores = league.box_scores(week=week)
 
                         if not box_scores:
-                            print(f"  Week {week}: No matchups found")
+                            break
+
+                        # Check for all 0-0 scores (future weeks)
+                        all_zero_scores = all(m.home_score == 0 and m.away_score == 0 for m in box_scores)
+                        if all_zero_scores:
                             break
 
                         for matchup in box_scores:
@@ -127,24 +119,11 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                             home_score = matchup.home_score
                             away_score = matchup.away_score
 
-                            # ========== DEBUG CODE MOVED INSIDE LOOP ==========
-                            if debug_owners and set([home_first, away_first]) == set(debug_owners):
-                                winner = home_first if home_score > away_score else away_first
-                                loser = away_first if home_score > away_score else home_first
-                                debug_matchups.append({
-                                    'year': year,
-                                    'week': week,
-                                    'home': home_first,
-                                    'away': away_first,
-                                    'home_score': home_score,
-                                    'away_score': away_score,
-                                    'winner': winner,
-                                    'loser': loser
-                                })
-                                print(f"  DEBUG 2019+: Week {week}: {winner} beat {loser} ({home_score:.1f} - {away_score:.1f})")
-                            # ========== END DEBUG CODE ==========
+                            # Skip self-matchups (same owner, different team IDs)
+                            if home_first == away_first:
+                                continue
 
-                            # FIXED: Update BOTH perspectives consistently
+                            # Update BOTH perspectives consistently
                             # Update home team's record vs away team
                             key_home = (home_first, away_first)
                             if key_home not in matchup_records:
@@ -184,12 +163,10 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                         week += 1
 
                     except Exception as e:
-                        print(f"  Week {week}: {e}")
                         break
 
             # For pre-2019, use team schedules
             else:
-                print(f"Using schedules for {year}")
                 processed_matchups = set()
 
                 for team in league.teams:
@@ -215,9 +192,13 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                         opponent_first = normalize_name(owner_first_name_map.get(opponent_owner, opponent_owner))
                         opponent_team_id = opponent_team.team_id if hasattr(opponent_team, 'team_id') else str(opponent_team.team_name)
 
+                        # Skip self-matchups (same owner, different team IDs)
+                        if owner_first == opponent_first:
+                            continue
+
                         # WORKAROUND: Skip known bad schedule data
-                        # In 2016, Jesse's team_id=1 has misaligned schedule data
-                        if year == 2016 and team_id == 1 and opponent_first in ['David', 'Dave']:
+                        # In 2016, Jesse's team_id=1 and Russ's data has corrupt schedules
+                        if year == 2016 and (team_id == 1 or owner_first == 'Russ'):
                             continue
 
                         # Use smaller team_id first to ensure consistent ordering
@@ -227,10 +208,6 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                         else:
                             # Skip - we'll process this matchup when we get to the other team
                             continue
-
-                        # Additional debug: print team info for mismatched schedules
-                        if debug_owners and year == 2016 and set([owner_first, opponent_first]) == set(debug_owners):
-                            print(f"    Processing from {owner_first}'s schedule: team_id={team_id}, opponent_team_id={opponent_team_id}, week_idx={week_idx}")
 
                         if matchup_id in processed_matchups:
                             continue
@@ -249,18 +226,7 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                             else:
                                 continue
 
-                            # Debug
-                            if debug_owners and set([owner_first, opponent_first]) == set(debug_owners):
-                                debug_matchups.append({
-                                    'year': year, 'week': week_idx + 1,
-                                    'winner': winner, 'loser': loser,
-                                    'matchup_id': matchup_id,
-                                    'processing_from_team': owner_first
-                                })
-                                print(f"  DEBUG PRE-2019: Week {week_idx+1}: {winner} beat {loser} | From {owner_first}'s schedule (outcome={outcome}) | matchup_id: {matchup_id}")
-
-
-                            # FIXED: Update BOTH perspectives consistently
+                            # Update BOTH perspectives consistently
                             # Winner's perspective
                             key_winner = (winner, loser)
                             if key_winner not in matchup_records:
@@ -286,16 +252,58 @@ def get_head_to_head_data(league_id, years, espn_s2, swid, debug_owners=None):
                             matchup_records[key_loser]['losses'] += 1
 
         except Exception as e:
-            print(f"Error processing {year}: {e}")
+            pass
 
-    # Debug summary
-    if debug_owners and debug_matchups:
-        print(f"\n=== DEBUG: {debug_owners[0]} vs {debug_owners[1]} ===")
-        print(f"Total matchups: {len(debug_matchups)}")
-        wins_0 = sum(1 for m in debug_matchups if m.get('winner') == debug_owners[0])
-        wins_1 = sum(1 for m in debug_matchups if m.get('winner') == debug_owners[1])
-        print(f"{debug_owners[0]} wins: {wins_0}")
-        print(f"{debug_owners[1]} wins: {wins_1}")
+    # HARDCODED FIX: 2016 has corrupt ESPN schedule data for both Jesse and Russ
+    # Russ's 2016 matchups: 6-11 record (17 games total)
+    russ_2016_games = [
+        ('Sean', 'W'),   # Week 1
+        ('David', 'L'),  # Week 2
+        ('Eddie', 'L'),  # Week 3
+        ('Tom', 'W'),    # Week 4
+        ('Bradley', 'L'), # Week 5
+        ('Jesse', 'W'),  # Week 6
+        ('Matthew', 'L'), # Week 7
+        ('Eric', 'L'),   # Week 8
+        ('Brian', 'L'),  # Week 9
+        ('Evan', 'W'),   # Week 10
+        ('John', 'L'),   # Week 11
+        ('Sean', 'L'),   # Week 12
+        ('David', 'L'),  # Week 13
+        ('Eddie', 'W'),  # Week 14
+        ('Tom', 'W'),    # Week 15
+        ('Bradley', 'L'), # Week 16
+        ('Jesse', 'L'),  # Week 17
+    ]
+
+    for opponent, result in russ_2016_games:
+        # Add from Russ's perspective
+        key_russ = ('Russ', opponent)
+        if key_russ not in matchup_records:
+            matchup_records[key_russ] = {
+                'wins': 0, 'losses': 0,
+                'points_for': 0, 'points_against': 0,
+                'games': 0
+            }
+        matchup_records[key_russ]['games'] += 1
+        if result == 'W':
+            matchup_records[key_russ]['wins'] += 1
+        else:
+            matchup_records[key_russ]['losses'] += 1
+
+        # Add from opponent's perspective
+        key_opponent = (opponent, 'Russ')
+        if key_opponent not in matchup_records:
+            matchup_records[key_opponent] = {
+                'wins': 0, 'losses': 0,
+                'points_for': 0, 'points_against': 0,
+                'games': 0
+            }
+        matchup_records[key_opponent]['games'] += 1
+        if result == 'W':
+            matchup_records[key_opponent]['losses'] += 1
+        else:
+            matchup_records[key_opponent]['wins'] += 1
 
     unique_first_names = set()
     for (owner1, owner2) in matchup_records.keys():
@@ -355,8 +363,8 @@ def save_cached_data(data, first_names):
     except Exception as e:
         print(f"Error saving cache: {e}")
 
-# Update the years to include all 14 years
-def load_h2h_data(debug_owners=None, force_refresh=False):
+# Update the years to include 2011-2025
+def load_h2h_data(force_refresh=False):
     """Load h2h data with persistent caching"""
     # Try to load from cache first
     if not force_refresh:
@@ -367,10 +375,9 @@ def load_h2h_data(debug_owners=None, force_refresh=False):
     # Fetch fresh data
     h2h_data, first_names = get_head_to_head_data(
         league_id=LEAGUE_ID,
-        years=range(2011, 2025),
+        years=range(2011, 2026),
         espn_s2=ESPN_S2,
-        swid=SWID,
-        debug_owners=debug_owners
+        swid=SWID
     )
 
     # Save to cache
@@ -541,7 +548,7 @@ with tab4:
     st.markdown("""
     ## About This Dashboard
 
-    Welcome to our Fantasy Football League Dashboard! This dashboard tracks league history from 2011-2024.
+    Welcome to our Fantasy Football League Dashboard! This dashboard tracks league history from 2011-2025.
 
     **Features:**
     - Head-to-head analysis across all years
