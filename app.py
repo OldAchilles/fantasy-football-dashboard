@@ -13,8 +13,8 @@ ESPN_S2 = st.secrets.get("ESPN_S2", "")
 SWID = st.secrets.get("SWID", "")
 LEAGUE_ID = st.secrets.get("LEAGUE_ID", "")
 
-# Cache file path
-CACHE_FILE = "h2h_cache.pkl"
+# Cache file path (v2 = includes duplicate week detection fix)
+CACHE_FILE = "h2h_cache_v2.pkl"
 CACHE_DURATION_DAYS = 7  # Cache for 7 days since data only changes weekly
 
 
@@ -96,6 +96,7 @@ def get_head_to_head_data(league_id, years, espn_s2, swid):
 
                 week = 1
                 max_week = 20
+                previous_week_signature = None  # Track previous week to detect duplicates
 
                 while week <= max_week:
                     try:
@@ -108,6 +109,22 @@ def get_head_to_head_data(league_id, years, espn_s2, swid):
                         all_zero_scores = all(m.home_score == 0 and m.away_score == 0 for m in box_scores)
                         if all_zero_scores:
                             break
+
+                        # Create a signature of this week's matchups (teams + scores)
+                        # If it matches the previous week exactly, ESPN is repeating data - stop
+                        current_week_signature = set()
+                        for m in box_scores:
+                            home_id = m.home_team.team_id if hasattr(m.home_team, 'team_id') else str(m.home_team.team_name)
+                            away_id = m.away_team.team_id if hasattr(m.away_team, 'team_id') else str(m.away_team.team_name)
+                            # Include scores in signature to detect exact duplicates
+                            sig = (tuple(sorted([home_id, away_id])), m.home_score, m.away_score)
+                            current_week_signature.add(sig)
+
+                        # If this week's signature exactly matches the previous week, we're seeing duplicates
+                        if previous_week_signature is not None and current_week_signature == previous_week_signature:
+                            break
+
+                        previous_week_signature = current_week_signature
 
                         for matchup in box_scores:
                             home_owner = matchup.home_team.owner if hasattr(matchup.home_team, 'owner') else matchup.home_team.team_name
