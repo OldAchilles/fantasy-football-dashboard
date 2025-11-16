@@ -414,8 +414,9 @@ def load_trades_data():
     def clean_player_name(name):
         if pd.isna(name) or name == '':
             return ''
-        # Replace common encoding issues
-        name = name.replace('�', "'")
+        # Remove the � character (which appears as a box with X when encoding fails)
+        # These are decorative quotes around comma-separated player lists
+        name = name.replace('�', '')
         name = name.strip()
         return name
 
