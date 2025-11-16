@@ -784,11 +784,37 @@ with tab4:
 
     # Display trades table
     if len(filtered_df) > 0:
-        # Format the display
-        display_trades = filtered_df[['trade_date', 'year', 'manager_a', 'manager_a_players',
-                                      'manager_b', 'manager_b_players']].copy()
-        display_trades['trade_date'] = display_trades['trade_date'].dt.strftime('%Y-%m-%d')
-        display_trades.columns = ['Date', 'Year', 'Manager A', 'Manager A Gave', 'Manager B', 'Manager B Gave']
+        # Reformat trades from the perspective of the selected manager
+        if selected_manager != "All Managers":
+            # Create perspective-based view
+            perspective_trades = []
+            for _, row in filtered_df.iterrows():
+                if row['manager_a'] == selected_manager:
+                    # Selected manager is Manager A
+                    perspective_trades.append({
+                        'Date': row['trade_date'].strftime('%Y-%m-%d'),
+                        'Year': row['year'],
+                        'Trading Partner': row['manager_b'],
+                        'I Gave': row['manager_a_players'],
+                        'I Received': row['manager_b_players']
+                    })
+                else:
+                    # Selected manager is Manager B
+                    perspective_trades.append({
+                        'Date': row['trade_date'].strftime('%Y-%m-%d'),
+                        'Year': row['year'],
+                        'Trading Partner': row['manager_a'],
+                        'I Gave': row['manager_b_players'],
+                        'I Received': row['manager_a_players']
+                    })
+
+            display_trades = pd.DataFrame(perspective_trades)
+        else:
+            # For "All Managers", keep the original format
+            display_trades = filtered_df[['trade_date', 'year', 'manager_a', 'manager_a_players',
+                                          'manager_b', 'manager_b_players']].copy()
+            display_trades['trade_date'] = display_trades['trade_date'].dt.strftime('%Y-%m-%d')
+            display_trades.columns = ['Date', 'Year', 'Manager A', 'Manager A Gave', 'Manager B', 'Manager B Gave']
 
         # Sort by date descending (most recent first)
         display_trades = display_trades.sort_values('Date', ascending=False)
