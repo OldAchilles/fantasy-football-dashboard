@@ -402,12 +402,42 @@ def load_h2h_data(force_refresh=False):
 
     return h2h_data, first_names
 
+@st.cache_data(ttl=timedelta(days=7))
+def load_trades_data():
+    """Load and process trades CSV data"""
+    filepath = "data/league_trades.csv"
+
+    # Read CSV with proper encoding handling
+    df = pd.read_csv(filepath, encoding='latin-1')
+
+    # Clean up player names - fix encoding issues with special characters
+    def clean_player_name(name):
+        if pd.isna(name) or name == '':
+            return ''
+        # Replace common encoding issues
+        name = name.replace('�', "'")
+        name = name.strip()
+        return name
+
+    # Apply cleaning to player columns
+    for col in ['manager_a_players', 'manager_a_playoff_keepers', 'manager_a_season_keepers',
+                'manager_b_players', 'manager_b_playoff_keepers', 'manager_b_season_keepers']:
+        df[col] = df[col].apply(clean_player_name)
+
+    # Convert trade_date to datetime
+    df['trade_date'] = pd.to_datetime(df['trade_date'])
+
+    # Add a trade_id for easy reference
+    df['trade_id'] = range(1, len(df) + 1)
+
+    return df
+
 # Page config
-st.set_page_config(page_title="Fantasy Football Dashboard", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="The Franchise Dashboard", page_icon="🏈", layout="wide")
 
-st.title("🏈 Fantasy Football League Dashboard")
+st.title("🏈 The Franchise Dashboard")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 All-Time Standings", "⚔️ Head-to-Head", "📈 Visualizations", "ℹ️ About"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 All-Time Standings", "⚔️ Head-to-Head", "📈 Visualizations", "🔄 Trades", "ℹ️ About"])
 
 with tab2:
     st.subheader("⚔️ Head-to-Head Records")
@@ -562,6 +592,248 @@ with tab3:
     st.info("Coming soon!")
 
 with tab4:
+    st.subheader("🔄 Trade Analysis")
+
+    # Load trades data
+    trades_df = load_trades_data()
+
+    st.markdown(f"### {len(trades_df)} Trades from {trades_df['year'].min()} to {trades_df['year'].max()}")
+
+    # ============================================
+    # SECTION 1: Trading Activity Timeline Heatmap
+    # ============================================
+    st.markdown("---")
+    st.markdown("### 📅 Trading Activity by Season & Week")
+
+    # Calculate NFL week based on date
+    # NFL season typically starts first week of September, runs ~18 weeks
+    def get_nfl_week(date, year):
+        """Estimate NFL week number based on date"""
+        # NFL season usually starts first Thursday after Labor Day (first Mon in Sept)
+        # Approximate: Week 1 starts around Sept 5-11
+        import datetime
+        season_start = datetime.date(year, 9, 7)  # Approximate start
+
+        # Adjust if date is before September (could be previous season)
+        if date.month < 9:
+            return None  # Offseason
+
+        # Calculate weeks since season start
+        days_diff = (date - season_start).days
+        nfl_week = max(1, (days_diff // 7) + 1)
+
+        # Cap at 18 (regular season)
+        return min(nfl_week, 18)
+
+    # Build matrix: rows = years, columns = NFL weeks
+    from collections import defaultdict
+    trade_activity = defaultdict(lambda: defaultdict(int))
+    trade_details_map = defaultdict(lambda: defaultdict(list))
+
+    for _, row in trades_df.iterrows():
+        year = row['year']
+        nfl_week = get_nfl_week(row['trade_date'].date(), year)
+
+        if nfl_week:  # Only count trades during NFL season
+            trade_activity[year][nfl_week] += 1
+            trade_details_map[year][nfl_week].append({
+                'date': row['trade_date'].strftime('%Y-%m-%d'),
+                'manager_a': row['manager_a'],
+                'manager_a_players': row['manager_a_players'],
+                'manager_b': row['manager_b'],
+                'manager_b_players': row['manager_b_players']
+            })
+
+    # Get all years (including years with no trades) and NFL weeks
+    all_years = list(range(trades_df['year'].min(), trades_df['year'].max() + 1))
+    nfl_weeks = range(1, 19)  # NFL Weeks 1-18
+
+    # Build matrix
+    matrix = []
+    hover_text = []
+    for year in all_years:
+        year_row = []
+        hover_row = []
+        for week in nfl_weeks:
+            count = trade_activity[year][week]
+            year_row.append(count)
+
+            # Build hover text with trade details
+            if count > 0:
+                trades_info = trade_details_map[year][week]
+                hover = f"<b>NFL Week {week}, {year}</b><br>{count} trade(s)<br><br>"
+                for i, trade in enumerate(trades_info, 1):
+                    hover += f"Trade {i}:<br>"
+                    hover += f"  {trade['manager_a']} → {trade['manager_b']}<br>"
+                hover_row.append(hover)
+            else:
+                hover_row.append(f"NFL Week {week}, {year}<br>No trades")
+        matrix.append(year_row)
+        hover_text.append(hover_row)
+
+    # Create heatmap
+    fig_timeline = go.Figure(data=go.Heatmap(
+        z=matrix,
+        x=list(nfl_weeks),
+        y=[str(y) for y in all_years],
+        colorscale='YlOrRd',
+        hovertext=hover_text,
+        hovertemplate='%{hovertext}<extra></extra>',
+        showscale=True,
+        colorbar=dict(title="Trades")
+    ))
+
+    fig_timeline.update_layout(
+        height=500,
+        xaxis_title="NFL Week",
+        yaxis_title="Season",
+        xaxis=dict(tickmode='linear', tick0=1, dtick=1),
+        yaxis=dict(tickmode='linear', dtick=1, showgrid=True, gridcolor='lightgray'),
+        plot_bgcolor='white'
+    )
+
+    st.plotly_chart(fig_timeline, use_container_width=True)
+
+    # ============================================
+    # SECTION 2: Summary Statistics
+    # ============================================
+    st.markdown("---")
+    st.markdown("### 📊 Trade Statistics")
+
+    # Calculate stats
+    manager_a_counts = trades_df['manager_a'].value_counts()
+    manager_b_counts = trades_df['manager_b'].value_counts()
+    total_trades_per_manager = manager_a_counts.add(manager_b_counts, fill_value=0).sort_values(ascending=False)
+
+    # Display in columns
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Trades", len(trades_df))
+
+    with col2:
+        most_active = total_trades_per_manager.index[0]
+        most_active_count = int(total_trades_per_manager.iloc[0])
+        st.metric("Most Active Trader", most_active, f"{most_active_count} trades")
+
+    with col3:
+        least_active = total_trades_per_manager.index[-1]
+        least_active_count = int(total_trades_per_manager.iloc[-1])
+        st.metric("Least Active Trader", least_active, f"{least_active_count} trades")
+
+    with col4:
+        trades_this_year = len(trades_df[trades_df['year'] == trades_df['year'].max()])
+        st.metric(f"{trades_df['year'].max()} Trades", trades_this_year)
+
+    # Bar chart of trades per manager
+    st.markdown("#### Trades by Manager")
+    trades_per_manager_df = pd.DataFrame({
+        'Manager': total_trades_per_manager.index,
+        'Trades': total_trades_per_manager.values
+    })
+
+    fig_bar = px.bar(
+        trades_per_manager_df,
+        x='Manager',
+        y='Trades',
+        color='Trades',
+        color_continuous_scale='Blues',
+        text='Trades'
+    )
+    fig_bar.update_traces(textposition='outside')
+    fig_bar.update_layout(showlegend=False, height=400)
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ============================================
+    # SECTION 3: Filterable Trades Table
+    # ============================================
+    st.markdown("---")
+    st.markdown("### 🔍 Find Trades by Manager")
+
+    # Get list of all unique managers
+    all_managers = sorted(list(set(trades_df['manager_a'].unique()) | set(trades_df['manager_b'].unique())))
+
+    # Manager filter
+    selected_manager = st.selectbox("Select a manager to view their trades:", ["All Managers"] + all_managers)
+
+    # Year range filter
+    col_year1, col_year2 = st.columns(2)
+    with col_year1:
+        min_year = st.selectbox("From Year:", sorted(trades_df['year'].unique()), index=0)
+    with col_year2:
+        max_year = st.selectbox("To Year:", sorted(trades_df['year'].unique(), reverse=True), index=0)
+
+    # Filter data
+    filtered_df = trades_df.copy()
+
+    if selected_manager != "All Managers":
+        filtered_df = filtered_df[
+            (filtered_df['manager_a'] == selected_manager) |
+            (filtered_df['manager_b'] == selected_manager)
+        ]
+
+    filtered_df = filtered_df[
+        (filtered_df['year'] >= min_year) &
+        (filtered_df['year'] <= max_year)
+    ]
+
+    st.markdown(f"**Showing {len(filtered_df)} trades**")
+
+    # Display trades table
+    if len(filtered_df) > 0:
+        # Format the display
+        display_trades = filtered_df[['trade_date', 'year', 'manager_a', 'manager_a_players',
+                                      'manager_b', 'manager_b_players']].copy()
+        display_trades['trade_date'] = display_trades['trade_date'].dt.strftime('%Y-%m-%d')
+        display_trades.columns = ['Date', 'Year', 'Manager A', 'Manager A Gave', 'Manager B', 'Manager B Gave']
+
+        # Sort by date descending (most recent first)
+        display_trades = display_trades.sort_values('Date', ascending=False)
+
+        st.dataframe(
+            display_trades,
+            hide_index=True,
+            use_container_width=True,
+            height=400
+        )
+
+        # Show individual trade details on expand
+        with st.expander("📋 View Individual Trade Details"):
+            trade_to_view = st.selectbox(
+                "Select a trade:",
+                options=filtered_df['trade_id'].tolist(),
+                format_func=lambda x: f"Trade #{x} - {filtered_df[filtered_df['trade_id']==x]['trade_date'].iloc[0].strftime('%Y-%m-%d')} - {filtered_df[filtered_df['trade_id']==x]['manager_a'].iloc[0]} ↔ {filtered_df[filtered_df['trade_id']==x]['manager_b'].iloc[0]}"
+            )
+
+            trade_detail = filtered_df[filtered_df['trade_id'] == trade_to_view].iloc[0]
+
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                st.markdown(f"### {trade_detail['manager_a']}")
+                st.markdown(f"**Traded away:**")
+                for player in trade_detail['manager_a_players'].split(','):
+                    st.markdown(f"- {player.strip()}")
+
+                if trade_detail['manager_a_playoff_keepers']:
+                    st.markdown(f"**Playoff Keepers:** {trade_detail['manager_a_playoff_keepers']}")
+                if trade_detail['manager_a_season_keepers']:
+                    st.markdown(f"**Season Keepers:** {trade_detail['manager_a_season_keepers']}")
+
+            with col_b:
+                st.markdown(f"### {trade_detail['manager_b']}")
+                st.markdown(f"**Traded away:**")
+                for player in trade_detail['manager_b_players'].split(','):
+                    st.markdown(f"- {player.strip()}")
+
+                if trade_detail['manager_b_playoff_keepers']:
+                    st.markdown(f"**Playoff Keepers:** {trade_detail['manager_b_playoff_keepers']}")
+                if trade_detail['manager_b_season_keepers']:
+                    st.markdown(f"**Season Keepers:** {trade_detail['manager_b_season_keepers']}")
+    else:
+        st.info("No trades found matching the selected filters.")
+
+with tab5:
     st.markdown("""
     ## About This Dashboard
 
