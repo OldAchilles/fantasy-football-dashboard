@@ -417,6 +417,8 @@ def load_trades_data():
         # Remove the � character (which appears as a box with X when encoding fails)
         # These are decorative quotes around comma-separated player lists
         name = name.replace('�', '')
+        # Remove any remaining double quotes
+        name = name.replace('"', '')
         name = name.strip()
         return name
 
