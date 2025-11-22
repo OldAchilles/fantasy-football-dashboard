@@ -854,7 +854,7 @@ with tab2:
         col_idx = idx % 5
 
         with cols[col_idx]:
-            if st.button(first_name, key=f"btn_{first_name}", use_container_width=True):
+            if st.button(first_name, key=f"btn_{first_name}", width="stretch"):
                 st.session_state['selected_owner'] = first_name
 
     # Get selected owner from session state
@@ -922,7 +922,7 @@ with tab2:
             display_df['Points Against (starting 2019)'] = display_df['Points Against (starting 2019)'].apply(lambda x: f"{x:.1f}")
             display_df['Avg Margin (starting 2019)'] = display_df['Avg Margin (starting 2019)'].apply(lambda x: f"{x:+.1f}")
 
-            st.dataframe(display_df, hide_index=True, use_container_width=True)
+            st.dataframe(display_df, hide_index=True, width="stretch")
 
             # Visualization
             st.markdown("---")
@@ -950,7 +950,7 @@ with tab2:
                 yaxis_title=""
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
             # Dominance / Struggles
             st.markdown("---")
@@ -1085,7 +1085,7 @@ with tab4:
         plot_bgcolor='white'
     )
 
-    st.plotly_chart(fig_timeline, use_container_width=True)
+    st.plotly_chart(fig_timeline, width="stretch")
 
     # ============================================
     # SECTION 2: Summary Statistics
@@ -1135,7 +1135,7 @@ with tab4:
     )
     fig_bar.update_traces(textposition='outside')
     fig_bar.update_layout(showlegend=False, height=400)
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_bar, width="stretch")
 
     # ============================================
     # SECTION 3: Filterable Trades Table
@@ -1212,7 +1212,7 @@ with tab4:
         st.dataframe(
             display_trades,
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             height=400
         )
 
@@ -1262,6 +1262,10 @@ with tab5:
     if not ODDS_API_KEY:
         st.error("ODDS_API_KEY not configured. Please add it to Streamlit secrets.")
     else:
+        # Debug info
+        store = get_props_cache_store()
+        st.caption(f"DEBUG: cached_data exists: {store['data'] is not None}, fetched_date: {store['fetched_date']}, should_refresh: {should_refresh_props()}")
+
         # Check if we need to refresh
         if should_refresh_props():
             with st.spinner("Fetching player props from API..."):
