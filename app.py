@@ -497,16 +497,20 @@ FANTASY_POINTS = {
 
 SLOT_ORDER = ['QB', 'RB', 'RB/WR', 'WR', 'WR/TE', 'TE', 'FLEX', 'OP', 'K', 'D/ST', 'BE', 'IR']
 
-# Global cache for props data (persists across all users/sessions)
-_props_cache_store = {'data': None}
+@st.cache_resource
+def get_props_cache_store():
+    """Returns a persistent dict that survives across reruns"""
+    return {'data': None, 'fetched_date': None}
 
 def get_cached_props():
     """Get the globally cached props data"""
-    return _props_cache_store['data']
+    return get_props_cache_store()['data']
 
 def set_cached_props(data):
     """Set the globally cached props data"""
-    _props_cache_store['data'] = data
+    store = get_props_cache_store()
+    store['data'] = data
+    store['fetched_date'] = datetime.utcnow().date().isoformat()
 
 def should_refresh_props():
     """
@@ -515,22 +519,18 @@ def should_refresh_props():
     - No cached data exists (first run)
     - It's Wednesday or Sunday AND we haven't fetched today
     """
-    cached_data = get_cached_props()
+    store = get_props_cache_store()
+    cached_data = store['data']
+    fetched_date_str = store['fetched_date']
 
     if cached_data is None:
         return True  # First run - always fetch
 
-    fetched_at_str = cached_data.get('fetched_at', '')
-
-    if not fetched_at_str:
-        return True  # No timestamp - fetch
-
-    try:
-        fetched_at = datetime.fromisoformat(fetched_at_str)
-    except:
-        return True  # Invalid timestamp - fetch
+    if not fetched_date_str:
+        return True  # No date - fetch
 
     now = datetime.utcnow()
+    today_str = now.date().isoformat()
 
     # Check if it's Wednesday (2) or Sunday (6)
     is_refresh_day = now.weekday() in [2, 6]
@@ -539,9 +539,10 @@ def should_refresh_props():
         return False  # Not a refresh day - use cached data
 
     # It's a refresh day - check if we already fetched today
-    fetched_today = fetched_at.date() == now.date()
+    if fetched_date_str == today_str:
+        return False  # Already fetched today
 
-    return not fetched_today  # Fetch if we haven't fetched today
+    return True  # It's a refresh day and we haven't fetched today
 
 def fetch_player_props_from_api():
     """Fetch player props directly from The Odds API"""
