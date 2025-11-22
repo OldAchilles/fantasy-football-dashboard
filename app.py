@@ -6,12 +6,14 @@ from espn_api.football import League
 import numpy as np
 import pickle
 import os
+import json
 from datetime import datetime, timedelta
 
 # Add your ESPN credentials at the top
 ESPN_S2 = st.secrets.get("ESPN_S2", "")
 SWID = st.secrets.get("SWID", "")
 LEAGUE_ID = st.secrets.get("LEAGUE_ID", "")
+ODDS_API_KEY = st.secrets.get("ODDS_API_KEY", "")
 
 # Cache file path (v2 = includes duplicate week detection fix)
 CACHE_FILE = "h2h_cache_v2.pkl"
@@ -435,12 +437,379 @@ def load_trades_data():
 
     return df
 
+# ============================================
+# PLAYER PROPS FUNCTIONS
+# ============================================
+
+import requests
+
+ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+
+PROP_MARKETS = [
+    'player_pass_yds',
+    'player_pass_tds',
+    'player_pass_interceptions',
+    'player_rush_yds',
+    'player_receptions',
+    'player_reception_yds',
+    'player_anytime_td',
+]
+
+MARKET_NAMES = {
+    'player_pass_yds': 'Pass Yds',
+    'player_pass_tds': 'Pass TDs',
+    'player_pass_interceptions': 'INTs',
+    'player_rush_yds': 'Rush Yds',
+    'player_receptions': 'Receptions',
+    'player_reception_yds': 'Rec Yds',
+    'player_anytime_td': 'Anytime TD',
+}
+
+FANTASY_POINTS = {
+    'player_pass_yds': 0.04,
+    'player_pass_tds': 4.0,
+    'player_pass_interceptions': -2.0,
+    'player_rush_yds': 0.1,
+    'player_receptions': 0.5,
+    'player_reception_yds': 0.1,
+    'player_anytime_td': 6.0,
+}
+
+SLOT_ORDER = ['QB', 'RB', 'RB/WR', 'WR', 'WR/TE', 'TE', 'FLEX', 'OP', 'K', 'D/ST', 'BE', 'IR']
+
+# Global cache for props data (persists across all users/sessions)
+_props_cache_store = {'data': None}
+
+def get_cached_props():
+    """Get the globally cached props data"""
+    return _props_cache_store['data']
+
+def set_cached_props(data):
+    """Set the globally cached props data"""
+    _props_cache_store['data'] = data
+
+def should_refresh_props():
+    """
+    Determine if we should fetch fresh props data.
+    Returns True if:
+    - No cached data exists (first run)
+    - It's Wednesday or Sunday AND we haven't fetched today
+    """
+    cached_data = get_cached_props()
+
+    if cached_data is None:
+        return True  # First run - always fetch
+
+    fetched_at_str = cached_data.get('fetched_at', '')
+
+    if not fetched_at_str:
+        return True  # No timestamp - fetch
+
+    try:
+        fetched_at = datetime.fromisoformat(fetched_at_str)
+    except:
+        return True  # Invalid timestamp - fetch
+
+    now = datetime.utcnow()
+
+    # Check if it's Wednesday (2) or Sunday (6)
+    is_refresh_day = now.weekday() in [2, 6]
+
+    if not is_refresh_day:
+        return False  # Not a refresh day - use cached data
+
+    # It's a refresh day - check if we already fetched today
+    fetched_today = fetched_at.date() == now.date()
+
+    return not fetched_today  # Fetch if we haven't fetched today
+
+def fetch_player_props_from_api():
+    """Fetch player props directly from The Odds API"""
+    if not ODDS_API_KEY:
+        return None
+
+    # Get this week's NFL events
+    url = f"{ODDS_API_BASE}/sports/americanfootball_nfl/events"
+    today = datetime.utcnow()
+    days_until_tuesday = (1 - today.weekday()) % 7
+    if days_until_tuesday == 0:
+        days_until_tuesday = 7
+    week_end = today + timedelta(days=days_until_tuesday)
+
+    params = {
+        'apiKey': ODDS_API_KEY,
+        'dateFormat': 'iso',
+        'commenceTimeTo': week_end.strftime('%Y-%m-%dT23:59:59Z')
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            return None
+        events = response.json()
+    except:
+        return None
+
+    if not events:
+        return None
+
+    # Fetch props for each game
+    all_data = {
+        'fetched_at': datetime.utcnow().isoformat(),
+        'players': {}
+    }
+
+    for event in events:
+        event_id = event.get('id')
+        home = event.get('home_team')
+        away = event.get('away_team')
+
+        props_url = f"{ODDS_API_BASE}/sports/americanfootball_nfl/events/{event_id}/odds"
+        props_params = {
+            'apiKey': ODDS_API_KEY,
+            'regions': 'us',
+            'markets': ','.join(PROP_MARKETS),
+            'oddsFormat': 'american',
+            'dateFormat': 'iso'
+        }
+
+        try:
+            props_response = requests.get(props_url, params=props_params)
+            if props_response.status_code != 200:
+                continue
+            props_data = props_response.json()
+        except:
+            continue
+
+        # Parse into player lookup
+        for bookmaker in props_data.get('bookmakers', []):
+            book_name = bookmaker.get('title', 'Unknown')
+
+            for market in bookmaker.get('markets', []):
+                market_key = market.get('key', '')
+
+                for outcome in market.get('outcomes', []):
+                    player_name = outcome.get('description', '')
+
+                    if not player_name:
+                        continue
+
+                    if 'D/ST' in player_name or 'Defense' in player_name or player_name == 'No Touchdown':
+                        continue
+
+                    if player_name not in all_data['players']:
+                        all_data['players'][player_name] = {
+                            'nfl_game': f"{away} @ {home}",
+                            'props': {}
+                        }
+
+                    if market_key not in all_data['players'][player_name]['props']:
+                        all_data['players'][player_name]['props'][market_key] = {
+                            'books': {}
+                        }
+
+                    if book_name not in all_data['players'][player_name]['props'][market_key]['books']:
+                        all_data['players'][player_name]['props'][market_key]['books'][book_name] = {
+                            'line': None,
+                            'over_odds': None,
+                            'under_odds': None,
+                            'odds': None
+                        }
+
+                    book_data = all_data['players'][player_name]['props'][market_key]['books'][book_name]
+
+                    if market_key == 'player_anytime_td':
+                        if outcome.get('name') == 'Yes':
+                            book_data['odds'] = outcome.get('price')
+                    else:
+                        if outcome.get('name') == 'Over':
+                            book_data['over_odds'] = outcome.get('price')
+                            book_data['line'] = outcome.get('point')
+                        elif outcome.get('name') == 'Under':
+                            book_data['under_odds'] = outcome.get('price')
+                            if book_data['line'] is None:
+                                book_data['line'] = outcome.get('point')
+
+    return all_data
+
+def odds_to_probability(odds):
+    """Convert American odds to implied probability"""
+    if odds is None:
+        return None
+    if odds < 0:
+        return abs(odds) / (abs(odds) + 100)
+    else:
+        return 100 / (odds + 100)
+
+def calculate_fantasy_points(market_key, book_data):
+    """Calculate expected fantasy points from a prop line"""
+    multiplier = FANTASY_POINTS.get(market_key, 0)
+    if market_key == 'player_anytime_td':
+        odds = book_data.get('odds')
+        prob = odds_to_probability(odds)
+        if prob is not None:
+            return prob * multiplier
+        return None
+    else:
+        line = book_data.get('line')
+        if line is not None:
+            return line * multiplier
+        return None
+
+def clean_name_for_matching(name):
+    """Remove suffixes like Jr., Sr., II, III and normalize periods for better matching"""
+    name = name.replace('.', '')
+    suffixes = ['jr', 'sr', 'ii', 'iii', 'iv', 'v']
+    parts = name.split()
+    while parts and parts[-1].lower() in suffixes:
+        parts = parts[:-1]
+    return parts
+
+def find_player_props(player_name, all_props):
+    """Find props for a player by name"""
+    if player_name in all_props:
+        return all_props[player_name]
+
+    player_parts = clean_name_for_matching(player_name)
+
+    if len(player_parts) >= 2:
+        first_name = player_parts[0].lower()
+        last_name = player_parts[-1].lower()
+
+        for prop_name in all_props:
+            prop_parts = clean_name_for_matching(prop_name)
+            if len(prop_parts) >= 2:
+                prop_first = prop_parts[0].lower()
+                prop_last = prop_parts[-1].lower()
+                if last_name == prop_last and first_name == prop_first:
+                    return all_props[prop_name]
+
+    return None
+
+def get_player_fantasy_projection(player_name, position, all_props, sportsbook):
+    """Get fantasy point projection for a player from a specific sportsbook"""
+    player_data = find_player_props(player_name, all_props)
+    if not player_data:
+        return None, {}
+
+    props = player_data.get('props', {})
+    if not props:
+        return None, {}
+
+    if position == 'QB':
+        required_markets = {'player_pass_yds', 'player_pass_tds', 'player_anytime_td'}
+    elif position == 'RB':
+        required_markets = {'player_rush_yds', 'player_receptions', 'player_anytime_td'}
+    elif position in ['WR', 'TE']:
+        required_markets = {'player_reception_yds', 'player_receptions', 'player_anytime_td'}
+    else:
+        required_markets = set()
+
+    total_pts = 0
+    breakdown = {}
+    markets_found = set()
+
+    for market_key, market_data in props.items():
+        books = market_data.get('books', {})
+        if sportsbook in books:
+            book_data = books[sportsbook]
+            fpts = calculate_fantasy_points(market_key, book_data)
+            if fpts is not None:
+                markets_found.add(market_key)
+                total_pts += fpts
+                line = book_data.get('line') or book_data.get('odds')
+                breakdown[market_key] = {'line': line, 'fpts': fpts}
+
+    if required_markets.issubset(markets_found):
+        return total_pts, breakdown
+    else:
+        return None, breakdown
+
+def get_best_projection_across_books(player_name, position, all_props, sportsbooks):
+    """Get the MAX fantasy projection across all sportsbooks"""
+    best_total = None
+    best_book = None
+    all_book_projections = {}
+
+    for book in sportsbooks:
+        total_pts, breakdown = get_player_fantasy_projection(player_name, position, all_props, book)
+        if total_pts is not None:
+            all_book_projections[book] = {'total': total_pts, 'breakdown': breakdown}
+            if best_total is None or total_pts > best_total:
+                best_total = total_pts
+                best_book = book
+
+    return best_total, best_book, all_book_projections
+
+def get_partial_projection(player_name, position, all_props, sportsbooks):
+    """Get partial projection data even when incomplete"""
+    all_book_data = {}
+    for book in sportsbooks:
+        total_pts, breakdown = get_player_fantasy_projection(player_name, position, all_props, book)
+        if breakdown:
+            partial_total = sum(d['fpts'] for d in breakdown.values())
+            all_book_data[book] = {'total': partial_total, 'breakdown': breakdown, 'complete': total_pts is not None}
+    return all_book_data
+
+def get_current_week_matchups_for_props():
+    """Get current week's fantasy matchups with rosters"""
+    league = League(league_id=LEAGUE_ID, year=2025, espn_s2=ESPN_S2, swid=SWID)
+    current_week = league.current_week
+    box_scores = league.box_scores(week=current_week)
+
+    matchups = []
+    for matchup in box_scores:
+        home_owner = "Unknown"
+        away_owner = "Unknown"
+
+        if hasattr(matchup.home_team, 'owners') and matchup.home_team.owners:
+            owner_obj = matchup.home_team.owners[0]
+            if isinstance(owner_obj, dict) and 'firstName' in owner_obj:
+                home_owner = owner_obj['firstName']
+
+        if hasattr(matchup.away_team, 'owners') and matchup.away_team.owners:
+            owner_obj = matchup.away_team.owners[0]
+            if isinstance(owner_obj, dict) and 'firstName' in owner_obj:
+                away_owner = owner_obj['firstName']
+
+        home_players = []
+        away_players = []
+
+        if hasattr(matchup, 'home_lineup'):
+            for player in matchup.home_lineup:
+                home_players.append({
+                    'name': player.name,
+                    'position': getattr(player, 'position', 'Unknown'),
+                    'pro_team': getattr(player, 'proTeam', 'Unknown'),
+                    'slot': getattr(player, 'slot_position', 'Unknown'),
+                })
+
+        if hasattr(matchup, 'away_lineup'):
+            for player in matchup.away_lineup:
+                away_players.append({
+                    'name': player.name,
+                    'position': getattr(player, 'position', 'Unknown'),
+                    'pro_team': getattr(player, 'proTeam', 'Unknown'),
+                    'slot': getattr(player, 'slot_position', 'Unknown'),
+                })
+
+        matchups.append({
+            'home_owner': home_owner,
+            'away_owner': away_owner,
+            'home_team_name': matchup.home_team.team_name,
+            'away_team_name': matchup.away_team.team_name,
+            'home_players': home_players,
+            'away_players': away_players,
+        })
+
+    return matchups, current_week
+
 # Page config
 st.set_page_config(page_title="The Franchise Dashboard", page_icon="🏈", layout="wide")
 
 st.title("🏈 The Franchise Dashboard")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 All-Time Standings", "⚔️ Head-to-Head", "📈 Visualizations", "🔄 Trades", "ℹ️ About"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 All-Time Standings", "⚔️ Head-to-Head", "📈 Visualizations", "🔄 Trades", "🎰 4 The Degenz", "ℹ️ About"])
 
 with tab2:
     st.subheader("⚔️ Head-to-Head Records")
@@ -862,7 +1231,178 @@ with tab4:
     else:
         st.info("No trades found matching the selected filters.")
 
+# ============================================
+# PLAYER PROPS TAB
+# ============================================
+
 with tab5:
+    st.subheader("🎰 Player Props & Fantasy Projections")
+
+    if not ODDS_API_KEY:
+        st.error("ODDS_API_KEY not configured. Please add it to Streamlit secrets.")
+    else:
+        # Check if we need to refresh
+        if should_refresh_props():
+            with st.spinner("Fetching player props from API..."):
+                props_cache = fetch_player_props_from_api()
+                set_cached_props(props_cache)
+        else:
+            props_cache = get_cached_props()
+
+        if props_cache is None:
+            st.error("Could not fetch player props data. The API may be unavailable or you may have exceeded your quota.")
+        else:
+            fetched_at = props_cache.get('fetched_at', 'Unknown')
+            st.caption(f"Data fetched: {fetched_at} (refreshes Wed & Sun mornings)")
+
+            all_props = props_cache.get('players', {})
+
+            sportsbooks = set()
+            for player_data in all_props.values():
+                for market_data in player_data.get('props', {}).values():
+                    sportsbooks.update(market_data.get('books', {}).keys())
+            sportsbooks = sorted(list(sportsbooks))
+
+            with st.spinner("Loading fantasy matchups..."):
+                matchups, current_week = get_current_week_matchups_for_props()
+
+            st.markdown(f"### Week {current_week} Matchups")
+
+            matchup_options = [f"{m['away_owner']} vs {m['home_owner']}" for m in matchups]
+            selected_matchup_idx = st.selectbox("Select Matchup:", range(len(matchup_options)), format_func=lambda x: matchup_options[x])
+
+            st.markdown("---")
+
+            selected_matchup = matchups[selected_matchup_idx]
+
+            col_away, col_home = st.columns(2)
+
+            def sort_players_by_slot(players):
+                def slot_key(p):
+                    slot = p.get('slot', 'BE')
+                    if slot in SLOT_ORDER:
+                        return SLOT_ORDER.index(slot)
+                    return len(SLOT_ORDER)
+                return sorted(players, key=slot_key)
+
+            def render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False):
+                if best_total is not None:
+                    pts_display = f"~{best_total:.1f}*" if is_partial else f"{best_total:.1f}"
+                    expander_label = f"**{slot}** {name} ({pro_team}) — **{pts_display} pts** ({best_book})"
+                else:
+                    expander_label = f"**{slot}** {name} ({pro_team}) — *No data*"
+
+                with st.expander(expander_label):
+                    if all_book_data:
+                        sorted_books = sorted(all_book_data.items(), key=lambda x: x[1]['total'], reverse=True)
+
+                        for book, data in sorted_books:
+                            total = data['total']
+                            breakdown = data['breakdown']
+                            is_complete = data.get('complete', True)
+
+                            if book == best_book:
+                                st.markdown(f"**🏆 {book}: {total:.1f} pts**")
+                            else:
+                                incomplete_marker = " *(partial)*" if not is_complete else ""
+                                st.markdown(f"**{book}: {total:.1f} pts{incomplete_marker}**")
+
+                            breakdown_parts = []
+                            for mkt, mkt_data in breakdown.items():
+                                mkt_name = MARKET_NAMES.get(mkt, mkt)
+                                line = mkt_data['line']
+                                fpts = mkt_data['fpts']
+                                if mkt == 'player_anytime_td':
+                                    breakdown_parts.append(f"{mkt_name}: {line:+d} → {fpts:.1f}")
+                                else:
+                                    breakdown_parts.append(f"{mkt_name}: {line} → {fpts:.1f}")
+
+                            st.caption(" | ".join(breakdown_parts))
+                    else:
+                        st.caption("No prop data available for this player")
+
+            def display_team_roster(owner, players, all_props, sportsbooks, column):
+                with column:
+                    st.markdown(f"### {owner}")
+
+                    sorted_players = sort_players_by_slot(players)
+
+                    starters = [p for p in sorted_players if p.get('slot') not in ['BE', 'IR']]
+                    bench = [p for p in sorted_players if p.get('slot') == 'BE']
+
+                    starters = [p for p in starters if p['position'] not in ['K', 'D/ST']]
+                    bench = [p for p in bench if p['position'] not in ['K', 'D/ST']]
+
+                    st.markdown("#### 🏈 Starters")
+
+                    for player in starters:
+                        slot = player.get('slot', 'BE')
+                        name = player['name']
+                        position = player['position']
+                        pro_team = player['pro_team']
+
+                        if slot in ['RB/WR', 'WR/TE', 'RB/WR/TE', 'OP']:
+                            slot = 'FLEX'
+
+                        best_total, best_book, all_book_data = get_best_projection_across_books(
+                            name, position, all_props, sportsbooks
+                        )
+
+                        if best_total is not None:
+                            render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
+                        else:
+                            partial_data = get_partial_projection(name, position, all_props, sportsbooks)
+
+                            if partial_data:
+                                best_partial = max(partial_data.values(), key=lambda x: x['total'])
+                                best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
+                                render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
+                            else:
+                                render_player_row(slot, name, pro_team, None, None, {})
+
+                    if bench:
+                        st.markdown("<br><br>", unsafe_allow_html=True)
+                        st.markdown("#### 🪑 Bench")
+
+                        for player in bench:
+                            slot = player.get('slot', 'BE')
+                            name = player['name']
+                            position = player['position']
+                            pro_team = player['pro_team']
+
+                            best_total, best_book, all_book_data = get_best_projection_across_books(
+                                name, position, all_props, sportsbooks
+                            )
+
+                            if best_total is not None:
+                                render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
+                            else:
+                                partial_data = get_partial_projection(name, position, all_props, sportsbooks)
+
+                                if partial_data:
+                                    best_partial = max(partial_data.values(), key=lambda x: x['total'])
+                                    best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
+                                    render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
+                                else:
+                                    render_player_row(slot, name, pro_team, None, None, {})
+
+            display_team_roster(
+                selected_matchup['away_owner'],
+                selected_matchup['away_players'],
+                all_props,
+                sportsbooks,
+                col_away
+            )
+
+            display_team_roster(
+                selected_matchup['home_owner'],
+                selected_matchup['home_players'],
+                all_props,
+                sportsbooks,
+                col_home
+            )
+
+with tab6:
     st.markdown("""
     ## About This Dashboard
 
@@ -872,10 +1412,12 @@ with tab5:
     - Head-to-head analysis across all years
     - Historical matchup records
     - Win percentages and rivalry tracking
+    - Player Props & Fantasy Projections from The Odds API
 
     **Data Updates:**
-    - Data is cached for 7 days to improve performance
+    - H2H data is cached for 7 days to improve performance
     - Use the refresh button in the sidebar to manually update
+    - Player props are fetched live and cached for 6 hours
 
-    *Dashboard built with Streamlit and ESPN Fantasy API*
+    *Dashboard built with Streamlit, ESPN Fantasy API, and The Odds API*
     """)
