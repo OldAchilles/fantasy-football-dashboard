@@ -517,6 +517,7 @@ def should_refresh_props():
     Determine if we should fetch fresh props data.
     Returns True if:
     - No cached data exists (first run)
+    - Cached data is empty (0 players)
     - It's Wednesday or Sunday AND we haven't fetched today
     """
     store = get_props_cache_store()
@@ -525,6 +526,10 @@ def should_refresh_props():
 
     if cached_data is None:
         return True  # First run - always fetch
+
+    # Check if cached data is empty (0 players)
+    if not cached_data.get('players'):
+        return True  # Empty data - try again
 
     if not fetched_date_str:
         return True  # No date - fetch
