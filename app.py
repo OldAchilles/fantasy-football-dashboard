@@ -10,10 +10,16 @@ import json
 from datetime import datetime, timedelta
 
 # Add your ESPN credentials at the top
-ESPN_S2 = st.secrets.get("ESPN_S2", "")
-SWID = st.secrets.get("SWID", "")
-LEAGUE_ID = st.secrets.get("LEAGUE_ID", "")
-ODDS_API_KEY = st.secrets.get("ODDS_API_KEY", "")
+def get_secret(key, default=""):
+    try:
+        return st.secrets[key]
+    except:
+        return default
+
+ESPN_S2 = get_secret("ESPN_S2")
+SWID = get_secret("SWID")
+LEAGUE_ID = get_secret("LEAGUE_ID")
+ODDS_API_KEY = get_secret("ODDS_API_KEY")
 
 # Cache file path (v2 = includes duplicate week detection fix)
 CACHE_FILE = "h2h_cache_v2.pkl"
