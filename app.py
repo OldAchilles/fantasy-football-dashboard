@@ -7,7 +7,7 @@ import numpy as np
 import pickle
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Add your ESPN credentials at the top
 def get_secret(key, default=""):
@@ -510,7 +510,7 @@ def set_cached_props(data):
     """Set the globally cached props data"""
     store = get_props_cache_store()
     store['data'] = data
-    store['fetched_date'] = datetime.utcnow().date().isoformat()
+    store['fetched_date'] = datetime.now(timezone.utc).date().isoformat()
 
 def should_refresh_props():
     """
@@ -529,7 +529,7 @@ def should_refresh_props():
     if not fetched_date_str:
         return True  # No date - fetch
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today_str = now.date().isoformat()
 
     # Check if it's Wednesday (2) or Sunday (6)
@@ -551,7 +551,7 @@ def fetch_player_props_from_api():
 
     # Get this week's NFL events
     url = f"{ODDS_API_BASE}/sports/americanfootball_nfl/events"
-    today = datetime.utcnow()
+    today = datetime.now(timezone.utc)
     days_until_tuesday = (1 - today.weekday()) % 7
     if days_until_tuesday == 0:
         days_until_tuesday = 7
@@ -576,7 +576,7 @@ def fetch_player_props_from_api():
 
     # Fetch props for each game
     all_data = {
-        'fetched_at': datetime.utcnow().isoformat(),
+        'fetched_at': datetime.now(timezone.utc).isoformat(),
         'players': {}
     }
 
@@ -1262,10 +1262,6 @@ with tab5:
     if not ODDS_API_KEY:
         st.error("ODDS_API_KEY not configured. Please add it to Streamlit secrets.")
     else:
-        # Debug info
-        store = get_props_cache_store()
-        st.caption(f"DEBUG: cached_data exists: {store['data'] is not None}, fetched_date: {store['fetched_date']}, should_refresh: {should_refresh_props()}")
-
         # Check if we need to refresh
         if should_refresh_props():
             with st.spinner("Fetching player props from API..."):
@@ -1278,7 +1274,8 @@ with tab5:
             st.error("Could not fetch player props data. The API may be unavailable or you may have exceeded your quota.")
         else:
             fetched_at = props_cache.get('fetched_at', 'Unknown')
-            st.caption(f"Data fetched: {fetched_at} (refreshes Wed & Sun mornings)")
+            player_count = len(props_cache.get('players', {}))
+            st.caption(f"Data fetched: {fetched_at} | Players: {player_count} (refreshes Wed & Sun mornings)")
 
             all_props = props_cache.get('players', {})
 
