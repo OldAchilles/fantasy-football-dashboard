@@ -1258,169 +1258,174 @@ with tab4:
 with tab5:
     st.subheader("🎰 Player Props & Fantasy Projections")
 
-    if not ODDS_API_KEY:
-        st.error("ODDS_API_KEY not configured. Please add it to Streamlit secrets.")
-    else:
-        # Check if we need to refresh
-        if should_refresh_props():
-            with st.spinner("Fetching player props from API..."):
-                props_cache = fetch_player_props_from_api()
-                set_cached_props(props_cache)
-        else:
-            props_cache = get_cached_props()
+    # Temporarily disabled for debugging deployment issues
+    st.info("Player Props feature is temporarily disabled while we resolve deployment issues. Check back soon!")
 
-        if props_cache is None:
-            st.error("Could not fetch player props data. The API may be unavailable or you may have exceeded your quota.")
-        else:
-            fetched_at = props_cache.get('fetched_at', 'Unknown')
-            st.caption(f"Data fetched: {fetched_at} (refreshes Wed & Sun mornings)")
-
-            all_props = props_cache.get('players', {})
-
-            sportsbooks = set()
-            for player_data in all_props.values():
-                for market_data in player_data.get('props', {}).values():
-                    sportsbooks.update(market_data.get('books', {}).keys())
-            sportsbooks = sorted(list(sportsbooks))
-
-            with st.spinner("Loading fantasy matchups..."):
-                matchups, current_week = get_current_week_matchups_for_props()
-
-            st.markdown(f"### Week {current_week} Matchups")
-
-            matchup_options = [f"{m['away_owner']} vs {m['home_owner']}" for m in matchups]
-            selected_matchup_idx = st.selectbox("Select Matchup:", range(len(matchup_options)), format_func=lambda x: matchup_options[x])
-
-            st.markdown("---")
-
-            selected_matchup = matchups[selected_matchup_idx]
-
-            col_away, col_home = st.columns(2)
-
-            def sort_players_by_slot(players):
-                def slot_key(p):
-                    slot = p.get('slot', 'BE')
-                    if slot in SLOT_ORDER:
-                        return SLOT_ORDER.index(slot)
-                    return len(SLOT_ORDER)
-                return sorted(players, key=slot_key)
-
-            def render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False):
-                if best_total is not None:
-                    pts_display = f"~{best_total:.1f}*" if is_partial else f"{best_total:.1f}"
-                    expander_label = f"**{slot}** {name} ({pro_team}) — **{pts_display} pts** ({best_book})"
-                else:
-                    expander_label = f"**{slot}** {name} ({pro_team}) — *No data*"
-
-                with st.expander(expander_label):
-                    if all_book_data:
-                        sorted_books = sorted(all_book_data.items(), key=lambda x: x[1]['total'], reverse=True)
-
-                        for book, data in sorted_books:
-                            total = data['total']
-                            breakdown = data['breakdown']
-                            is_complete = data.get('complete', True)
-
-                            if book == best_book:
-                                st.markdown(f"**🏆 {book}: {total:.1f} pts**")
-                            else:
-                                incomplete_marker = " *(partial)*" if not is_complete else ""
-                                st.markdown(f"**{book}: {total:.1f} pts{incomplete_marker}**")
-
-                            breakdown_parts = []
-                            for mkt, mkt_data in breakdown.items():
-                                mkt_name = MARKET_NAMES.get(mkt, mkt)
-                                line = mkt_data['line']
-                                fpts = mkt_data['fpts']
-                                if mkt == 'player_anytime_td':
-                                    breakdown_parts.append(f"{mkt_name}: {line:+d} → {fpts:.1f}")
-                                else:
-                                    breakdown_parts.append(f"{mkt_name}: {line} → {fpts:.1f}")
-
-                            st.caption(" | ".join(breakdown_parts))
-                    else:
-                        st.caption("No prop data available for this player")
-
-            def display_team_roster(owner, players, all_props, sportsbooks, column):
-                with column:
-                    st.markdown(f"### {owner}")
-
-                    sorted_players = sort_players_by_slot(players)
-
-                    starters = [p for p in sorted_players if p.get('slot') not in ['BE', 'IR']]
-                    bench = [p for p in sorted_players if p.get('slot') == 'BE']
-
-                    starters = [p for p in starters if p['position'] not in ['K', 'D/ST']]
-                    bench = [p for p in bench if p['position'] not in ['K', 'D/ST']]
-
-                    st.markdown("#### 🏈 Starters")
-
-                    for player in starters:
-                        slot = player.get('slot', 'BE')
-                        name = player['name']
-                        position = player['position']
-                        pro_team = player['pro_team']
-
-                        if slot in ['RB/WR', 'WR/TE', 'RB/WR/TE', 'OP']:
-                            slot = 'FLEX'
-
-                        best_total, best_book, all_book_data = get_best_projection_across_books(
-                            name, position, all_props, sportsbooks
-                        )
-
-                        if best_total is not None:
-                            render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
-                        else:
-                            partial_data = get_partial_projection(name, position, all_props, sportsbooks)
-
-                            if partial_data:
-                                best_partial = max(partial_data.values(), key=lambda x: x['total'])
-                                best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
-                                render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
-                            else:
-                                render_player_row(slot, name, pro_team, None, None, {})
-
-                    if bench:
-                        st.markdown("<br><br>", unsafe_allow_html=True)
-                        st.markdown("#### 🪑 Bench")
-
-                        for player in bench:
-                            slot = player.get('slot', 'BE')
-                            name = player['name']
-                            position = player['position']
-                            pro_team = player['pro_team']
-
-                            best_total, best_book, all_book_data = get_best_projection_across_books(
-                                name, position, all_props, sportsbooks
-                            )
-
-                            if best_total is not None:
-                                render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
-                            else:
-                                partial_data = get_partial_projection(name, position, all_props, sportsbooks)
-
-                                if partial_data:
-                                    best_partial = max(partial_data.values(), key=lambda x: x['total'])
-                                    best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
-                                    render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
-                                else:
-                                    render_player_row(slot, name, pro_team, None, None, {})
-
-            display_team_roster(
-                selected_matchup['away_owner'],
-                selected_matchup['away_players'],
-                all_props,
-                sportsbooks,
-                col_away
-            )
-
-            display_team_roster(
-                selected_matchup['home_owner'],
-                selected_matchup['home_players'],
-                all_props,
-                sportsbooks,
-                col_home
-            )
+    # COMMENTED OUT FOR DEBUGGING - START
+    # if not ODDS_API_KEY:
+    #     st.error("ODDS_API_KEY not configured. Please add it to Streamlit secrets.")
+    # else:
+    #     # Check if we need to refresh
+    #     if should_refresh_props():
+    #         with st.spinner("Fetching player props from API..."):
+    #             props_cache = fetch_player_props_from_api()
+    #             set_cached_props(props_cache)
+    #     else:
+    #         props_cache = get_cached_props()
+    #
+    #     if props_cache is None:
+    #         st.error("Could not fetch player props data. The API may be unavailable or you may have exceeded your quota.")
+    #     else:
+    #         fetched_at = props_cache.get('fetched_at', 'Unknown')
+    #         st.caption(f"Data fetched: {fetched_at} (refreshes Wed & Sun mornings)")
+    #
+    #         all_props = props_cache.get('players', {})
+    #
+    #         sportsbooks = set()
+    #         for player_data in all_props.values():
+    #             for market_data in player_data.get('props', {}).values():
+    #                 sportsbooks.update(market_data.get('books', {}).keys())
+    #         sportsbooks = sorted(list(sportsbooks))
+    #
+    #         with st.spinner("Loading fantasy matchups..."):
+    #             matchups, current_week = get_current_week_matchups_for_props()
+    #
+    #         st.markdown(f"### Week {current_week} Matchups")
+    #
+    #         matchup_options = [f"{m['away_owner']} vs {m['home_owner']}" for m in matchups]
+    #         selected_matchup_idx = st.selectbox("Select Matchup:", range(len(matchup_options)), format_func=lambda x: matchup_options[x])
+    #
+    #         st.markdown("---")
+    #
+    #         selected_matchup = matchups[selected_matchup_idx]
+    #
+    #         col_away, col_home = st.columns(2)
+    #
+    #         def sort_players_by_slot(players):
+    #             def slot_key(p):
+    #                 slot = p.get('slot', 'BE')
+    #                 if slot in SLOT_ORDER:
+    #                     return SLOT_ORDER.index(slot)
+    #                 return len(SLOT_ORDER)
+    #             return sorted(players, key=slot_key)
+    #
+    #         def render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False):
+    #             if best_total is not None:
+    #                 pts_display = f"~{best_total:.1f}*" if is_partial else f"{best_total:.1f}"
+    #                 expander_label = f"**{slot}** {name} ({pro_team}) — **{pts_display} pts** ({best_book})"
+    #             else:
+    #                 expander_label = f"**{slot}** {name} ({pro_team}) — *No data*"
+    #
+    #             with st.expander(expander_label):
+    #                 if all_book_data:
+    #                     sorted_books = sorted(all_book_data.items(), key=lambda x: x[1]['total'], reverse=True)
+    #
+    #                     for book, data in sorted_books:
+    #                         total = data['total']
+    #                         breakdown = data['breakdown']
+    #                         is_complete = data.get('complete', True)
+    #
+    #                         if book == best_book:
+    #                             st.markdown(f"**🏆 {book}: {total:.1f} pts**")
+    #                         else:
+    #                             incomplete_marker = " *(partial)*" if not is_complete else ""
+    #                             st.markdown(f"**{book}: {total:.1f} pts{incomplete_marker}**")
+    #
+    #                         breakdown_parts = []
+    #                         for mkt, mkt_data in breakdown.items():
+    #                             mkt_name = MARKET_NAMES.get(mkt, mkt)
+    #                             line = mkt_data['line']
+    #                             fpts = mkt_data['fpts']
+    #                             if mkt == 'player_anytime_td':
+    #                                 breakdown_parts.append(f"{mkt_name}: {line:+d} → {fpts:.1f}")
+    #                             else:
+    #                                 breakdown_parts.append(f"{mkt_name}: {line} → {fpts:.1f}")
+    #
+    #                         st.caption(" | ".join(breakdown_parts))
+    #                 else:
+    #                     st.caption("No prop data available for this player")
+    #
+    #         def display_team_roster(owner, players, all_props, sportsbooks, column):
+    #             with column:
+    #                 st.markdown(f"### {owner}")
+    #
+    #                 sorted_players = sort_players_by_slot(players)
+    #
+    #                 starters = [p for p in sorted_players if p.get('slot') not in ['BE', 'IR']]
+    #                 bench = [p for p in sorted_players if p.get('slot') == 'BE']
+    #
+    #                 starters = [p for p in starters if p['position'] not in ['K', 'D/ST']]
+    #                 bench = [p for p in bench if p['position'] not in ['K', 'D/ST']]
+    #
+    #                 st.markdown("#### 🏈 Starters")
+    #
+    #                 for player in starters:
+    #                     slot = player.get('slot', 'BE')
+    #                     name = player['name']
+    #                     position = player['position']
+    #                     pro_team = player['pro_team']
+    #
+    #                     if slot in ['RB/WR', 'WR/TE', 'RB/WR/TE', 'OP']:
+    #                         slot = 'FLEX'
+    #
+    #                     best_total, best_book, all_book_data = get_best_projection_across_books(
+    #                         name, position, all_props, sportsbooks
+    #                     )
+    #
+    #                     if best_total is not None:
+    #                         render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
+    #                     else:
+    #                         partial_data = get_partial_projection(name, position, all_props, sportsbooks)
+    #
+    #                         if partial_data:
+    #                             best_partial = max(partial_data.values(), key=lambda x: x['total'])
+    #                             best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
+    #                             render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
+    #                         else:
+    #                             render_player_row(slot, name, pro_team, None, None, {})
+    #
+    #                 if bench:
+    #                     st.markdown("<br><br>", unsafe_allow_html=True)
+    #                     st.markdown("#### 🪑 Bench")
+    #
+    #                     for player in bench:
+    #                         slot = player.get('slot', 'BE')
+    #                         name = player['name']
+    #                         position = player['position']
+    #                         pro_team = player['pro_team']
+    #
+    #                         best_total, best_book, all_book_data = get_best_projection_across_books(
+    #                             name, position, all_props, sportsbooks
+    #                         )
+    #
+    #                         if best_total is not None:
+    #                             render_player_row(slot, name, pro_team, best_total, best_book, all_book_data, is_partial=False)
+    #                         else:
+    #                             partial_data = get_partial_projection(name, position, all_props, sportsbooks)
+    #
+    #                             if partial_data:
+    #                                 best_partial = max(partial_data.values(), key=lambda x: x['total'])
+    #                                 best_partial_book = [k for k, v in partial_data.items() if v['total'] == best_partial['total']][0]
+    #                                 render_player_row(slot, name, pro_team, best_partial['total'], best_partial_book, partial_data, is_partial=True)
+    #                             else:
+    #                                 render_player_row(slot, name, pro_team, None, None, {})
+    #
+    #         display_team_roster(
+    #             selected_matchup['away_owner'],
+    #             selected_matchup['away_players'],
+    #             all_props,
+    #             sportsbooks,
+    #             col_away
+    #         )
+    #
+    #         display_team_roster(
+    #             selected_matchup['home_owner'],
+    #             selected_matchup['home_players'],
+    #             all_props,
+    #             sportsbooks,
+    #             col_home
+    #         )
+    # COMMENTED OUT FOR DEBUGGING - END
 
 with tab6:
     st.markdown("""
