@@ -364,20 +364,23 @@ def get_rivalry_stats(matchup_records, owner1, owner2):
     }
 
 def load_cached_data():
-    """Load data from cache if available and not expired"""
-    if os.path.exists(CACHE_FILE):
+    """Load data from cache file (committed to git)"""
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_path = os.path.join(script_dir, CACHE_FILE)
+
+    if os.path.exists(cache_path):
         try:
-            with open(CACHE_FILE, 'rb') as f:
+            with open(cache_path, 'rb') as f:
                 cached = pickle.load(f)
-                cache_time = cached.get('timestamp')
-                if cache_time and (datetime.now() - cache_time) < timedelta(days=CACHE_DURATION_DAYS):
-                    return cached.get('data'), cached.get('first_names')
+                # Don't check expiration - use the committed cache
+                return cached.get('data'), cached.get('first_names')
         except Exception as e:
             print(f"Error loading cache: {e}")
     return None, None
 
 def save_cached_data(data, first_names):
-    """Save data to cache file"""
+    """Save data to cache file (only works locally)"""
     try:
         with open(CACHE_FILE, 'wb') as f:
             pickle.dump({
@@ -388,27 +391,38 @@ def save_cached_data(data, first_names):
     except Exception as e:
         print(f"Error saving cache: {e}")
 
-# Update the years to include 2011-2025
-def load_h2h_data(force_refresh=False):
-    """Load h2h data with persistent caching"""
-    # Try to load from cache first
-    if not force_refresh:
-        cached_data, cached_names = load_cached_data()
-        if cached_data is not None and cached_names is not None:
-            return cached_data, cached_names
+@st.cache_resource
+def load_h2h_data_cached():
+    """Load h2h data - uses file cache first, then fetches if needed"""
+    cached_data, cached_names = load_cached_data()
+    if cached_data is not None and cached_names is not None:
+        return cached_data, cached_names
 
-    # Fetch fresh data
+    # Fetch fresh data only if no cache exists
     h2h_data, first_names = get_head_to_head_data(
         league_id=LEAGUE_ID,
         years=range(2011, 2026),
         espn_s2=ESPN_S2,
         swid=SWID
     )
-
-    # Save to cache
-    save_cached_data(h2h_data, first_names)
-
     return h2h_data, first_names
+
+def load_h2h_data(force_refresh=False):
+    """Load h2h data with optional force refresh"""
+    if force_refresh:
+        # Clear the cache and fetch fresh
+        load_h2h_data_cached.clear()
+        h2h_data, first_names = get_head_to_head_data(
+            league_id=LEAGUE_ID,
+            years=range(2011, 2026),
+            espn_s2=ESPN_S2,
+            swid=SWID
+        )
+        # Save locally
+        save_cached_data(h2h_data, first_names)
+        return h2h_data, first_names
+
+    return load_h2h_data_cached()
 
 @st.cache_data(ttl=timedelta(days=7))
 def load_trades_data():
